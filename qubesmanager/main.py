@@ -43,8 +43,24 @@ from pyinotify import WatchManager, Notifier, ThreadedNotifier, EventsCodes, Pro
 import subprocess
 import time
 import threading
+import gudev
 
 qubes_guid_path = '/usr/bin/qubes_guid'
+default_removable = 'xvdi'
+
+def get_device_list():
+    devs = []
+    for device in udev_client.query_by_subsystem('block'):
+        if device.get_sysfs_attr_as_int('removable') or\
+            (device.get_parent() and device.get_parent().get_sysfs_attr_as_int('removable')):
+                label = ""
+                if device.has_property('ID_MODEL'):
+                    label += device.get_property('ID_MODEL')
+                if device.has_property('ID_FS_LABEL'):
+                    label += " ({0})".format(device.get_property('ID_FS_LABEL'))
+                devs.append({'name': device.get_name(), 'label': label})
+
+    return devs
 
 class QubesConfigFileWatcher(ProcessEvent):
     def __init__ (self, update_func):
@@ -372,8 +388,8 @@ class VmManagerWindow(QMainWindow):
         self.action_shutdownvm = self.createAction ("Shutdown VM", slot=self.shutdown_vm,
                                              icon="shutdownvm", tip="Shutdown a running VM")
 
-        self.action_updatevm = self.createAction ("Commit VM changes", slot=self.update_vm,
-                                             icon="updateable", tip="Commit changes to template (only for 'updateable' template VMs); VM must be stopped")
+        self.action_connect_device = self.createAction ("Connect device", slot=self.connect_device,
+                                             icon="updateable", tip="Connect external device (USB, CD-ROM etc)")
 
         self.action_showallvms = self.createAction ("Show/Hide Inactive VMs", slot=None, checkable=True,
                                              icon="showallvms", tip="Show/Hide Inactive VMs")
@@ -389,14 +405,14 @@ class VmManagerWindow(QMainWindow):
         self.action_resumevm.setDisabled(True)
         self.action_pausevm.setDisabled(True)
         self.action_shutdownvm.setDisabled(True)
-        self.action_updatevm.setDisabled(True)
+        self.action_connect_device.setDisabled(True)
 
         self.toolbar = self.addToolBar ("Toolbar")
         self.toolbar.setFloatable(False)
         self.addActions (self.toolbar, (self.action_createvm, self.action_removevm,
                                    None,
                                    self.action_resumevm, self.action_pausevm, self.action_shutdownvm,
-                                   self.action_updatevm, self.action_editfwrules,
+                                   self.action_connect_device, self.action_editfwrules,
                                    None,
                                    self.action_showcpuload,
                                    ))
@@ -556,7 +572,7 @@ class VmManagerWindow(QMainWindow):
         self.action_resumevm.setEnabled(not vm.is_running())
         self.action_pausevm.setEnabled(vm.is_running() and vm.qid != 0)
         self.action_shutdownvm.setEnabled(vm.is_running() and vm.qid != 0)
-        self.action_updatevm.setEnabled(vm.is_updateable() and not vm.is_running())
+        self.action_connect_device.setEnabled(vm.is_running())
         self.action_editfwrules.setEnabled(vm.is_networked() and (vm.is_appvm() or vm.is_disposablevm()))
 
     def get_minimum_table_width(self):
@@ -783,24 +799,29 @@ class VmManagerWindow(QMainWindow):
             self.shutdown_monitor[vm.qid] = VmShutdownMonitor (vm)
             QTimer.singleShot (vm_shutdown_timeout, self.shutdown_monitor[vm.qid].check_if_vm_has_shutdown)
 
-    def update_vm(self):
+    def connect_device(self):
         vm = self.get_selected_vm()
-        assert not vm.is_running()
+        assert vm.is_running()
 
-        reply = QMessageBox.question(None, "VM Update Confirmation",
-                                     "Are you sure you want to commit template <b>'{0}'</b> changes?<br>"
-                                     "<small>AppVMs will see the changes after restart.</small>".format(vm.name),
-                                     QMessageBox.Yes | QMessageBox.Cancel)
+        #TODO: check if some device already connected
+
+        devices = get_device_list()
+        devices_list = []
+        for dev in devices:
+            devices_list.append("{0}: {1}".format(dev['name'], dev['label']))
+        device = QInputDialog.getItem(None, "Connect device to VM", "Select device:", devices_list)
 
         app.processEvents()
 
-        if reply == QMessageBox.Yes:
+        if device[1]:
+            
+            dev_path = "phy:/dev/{0}".format(device[0].split(':')[0])
+
             try:
-                vm.commit_changes();
+                subprocess.check_call (["/usr/sbin/xm", "block-attach", vm.name, dev_path, default_removable, 'w'])
             except Exception as ex:
-                QMessageBox.warning (None, "Error commiting changes!", "ERROR: {0}".format(ex))
+                QMessageBox.warning (None, "Error connecting device!", "ERROR: {0}".format(ex))
                 return
-            trayIcon.showMessage ("Qubes Manager", "Changes to template '{0}' commited.".format(vm.name), msecs=3000)
 
     def showcpuload(self):
         self.__cpugraphs = self.action_showcpuload.isChecked()
@@ -977,6 +998,9 @@ def main():
     global trayIcon
     trayIcon = QubesTrayIcon(QIcon(":/qubes.png"))
     trayIcon.show()
+
+    global udev_client
+    udev_client = gudev.Client('block')
 
     app.exec_()
     trayIcon = None
