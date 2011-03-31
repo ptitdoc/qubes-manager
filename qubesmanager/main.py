@@ -756,6 +756,13 @@ class VmManagerWindow(QMainWindow):
         vm = self.get_selected_vm()
         assert not vm.is_running()
 
+        if vm.is_paused():
+            try:
+                subprocess.check_call (["/usr/sbin/xm", "unpause", vm.name])
+            except Exception as ex:
+                QMessageBox.warning (None, "Error unpausing VM!", "ERROR: {0}".format(ex))
+            return
+
         try:
             vm.verify_files()
             xid = vm.start()
@@ -848,7 +855,7 @@ class VmManagerWindow(QMainWindow):
         qvm_collection.unlock_db()
 
         for vm in qvm_collection.values():
-            if vm.is_proxyvm():
+            if vm.is_proxyvm() and vm.is_running():
                 error_file = "/local/domain/{0}/qubes_iptables_error".format(vm.get_xid())
 
                 error = subprocess.Popen(
